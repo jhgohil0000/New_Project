@@ -668,13 +668,12 @@ async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def relay_message(update, context):
     user_id = update.effective_user.id
     
-    # --- INTERCEPT AVATAR UPLOADS ---
+# --- INTERCEPT AVATAR UPLOADS ---
     if context.user_data.get("state") == "ONBOARDING_AVATAR" and update.message and update.message.photo:
         file_id = update.message.photo[-1].file_id
         await update_user(user_id, "avatar_id", file_id)
         context.user_data["state"] = None
-        print(f"\n📸 NEW AVATAR UPLOADED! ID: {file_id}\n") # Use this to find your default IDs!
-        await update.message.reply_text("✅ **Profile Complete!**", reply_markup=get_keyboard_lobby(await get_lang(user_id)), parse_mode='Markdown')
+        await update.message.reply_text(f"✅ **Profile Complete!**\n\nYOUR ID IS:\n`{file_id}`", reply_markup=get_keyboard_lobby(await get_lang(user_id)), parse_mode='Markdown')
         return
 
     l = await get_lang(user_id)
