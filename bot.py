@@ -18,7 +18,7 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder, ContextTypes, CommandHandler, 
-    CallbackQueryHandler, MessageHandler, filters
+    CallbackQueryHandler, MessageHandler, filters, MessageReactionHandler
 )
 from telegram.request import HTTPXRequest
 from ghost_engine import GhostEngine
@@ -868,6 +868,22 @@ async def stop_chat(update, context, is_next=False):
         await update.message.reply_text("😶‍🌫️ **Partner Disconnect.**", reply_markup=get_keyboard_lobby(), parse_mode='Markdown')
         await update.message.reply_text("Rate Stranger:", reply_markup=InlineKeyboardMarkup(k_me))
 
+async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message_reaction: return
+    user_id = update.effective_user.id
+    partner_id = ACTIVE_CHATS.get(user_id)
+    if not partner_id or isinstance(partner_id, str): return 
+    
+    target_msg_id = None
+    for (rec_id, rec_msg_id), snd_msg_id in MESSAGE_MAP.items():
+        if rec_id == user_id and rec_msg_id == update.message_reaction.message_id:
+            target_msg_id = snd_msg_id
+            break
+    
+    if target_msg_id:
+        try: await context.bot.set_message_reaction(chat_id=partner_id, message_id=target_msg_id, reaction=update.message_reaction.new_reaction)
+        except: pass
+
 async def relay_message(update, context):
     user_id = update.effective_user.id
     partner_id = ACTIVE_CHATS.get(user_id)
@@ -949,7 +965,14 @@ async def relay_message(update, context):
 
         if user_id in GAME_STATES and GAME_STATES[user_id].get("status") == "answering" and GAME_STATES[user_id].get("turn") == user_id:
             try: 
-                await update.message.copy(chat_id=partner_id, caption=f"🗣️ **Answer**")
+                if update.message.photo or update.message.video or update.message.video_note or update.message.voice:
+                    duration = update.message.video.duration if update.message.video else (update.message.voice.duration if update.message.voice else (update.message.video_note.duration if update.message.video_note else 0))
+                    cap = "📸 Photo" if update.message.photo else ("📹 Video" if update.message.video else ("🗣️ Voice" if update.message.voice else "⏺ Circle Video"))
+                    cb = f"secret_{user_id}_{update.message.message_id}_{duration}"
+                    await context.bot.send_message(partner_id, f"🔒 **Secret Answer ({cap}) Received!**\nTap to view.\n_Self-destructing._", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"🔓 View", callback_data=cb)]]), parse_mode='Markdown')
+                else:
+                    await update.message.copy(chat_id=partner_id, caption=f"🗣️ **Answer**")
+                
                 await update.message.reply_text("✅ Answer Sent.")
                 GAME_STATES[user_id]["status"] = "playing"
                 if partner_id in GAME_STATES: GAME_STATES[partner_id]["status"] = "playing"
@@ -981,6 +1004,11 @@ async def relay_message(update, context):
                 reply_target_id = None
                 if update.message.reply_to_message:
                     reply_target_id = MESSAGE_MAP.get((user_id, update.message.reply_to_message.message_id))
+                    if not reply_target_id:
+                        for (rec_id, rec_msg_id), snd_msg_id in MESSAGE_MAP.items():
+                            if rec_id == partner_id and snd_msg_id == update.message.reply_to_message.message_id:
+                                reply_target_id = rec_msg_id
+                                break
                 sent_msg = await update.message.copy(chat_id=partner_id, reply_to_message_id=reply_target_id)
                 if sent_msg: MESSAGE_MAP[(partner_id, sent_msg.message_id)] = update.message.message_id
             except: await stop_chat(update, context)
@@ -1379,7 +1407,8 @@ if __name__ == '__main__':
         app.add_handler(MessageHandler(filters.TEXT, handle_text_input))
         
         app.add_handler(CallbackQueryHandler(button_handler))
+        app.add_handler(MessageReactionHandler(handle_reaction))
         app.add_handler(MessageHandler(filters.ALL, relay_message))
         
-        print("🤖 PHASE 20 BOT LIVE")
+        print("🤖 PHASE 21 BOT LIVE")
         app.run_polling()
