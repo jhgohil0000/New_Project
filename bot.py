@@ -7,8 +7,8 @@ import datetime
 import asyncio
 import os
 import threading
-import random  # <--- NEW
-import time  # <--- THIS WAS MISSING
+import random  
+import time  
 from game_data import GAME_DATA
 from flask import Flask
 from telegram import (
@@ -38,7 +38,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 # ==============================================================================
 # 1. RAM CACHE: Stores who is chatting with whom. Instant access. 0ms Latency.
 ACTIVE_CHATS = {} 
-# [NEW] Translation Map for Replies
+# Translation Map for Replies
 MESSAGE_MAP = {}
 # --- GAME STATE & DATA ---
 GAME_STATES = {}       # {user_id: {'game': 'tod', 'turn': uid, 'partner': pid}}
@@ -276,10 +276,9 @@ async def start_game_session(update, context, game_raw, p1, p2):
         rounds = int(game_raw.split("|")[1])
 
     # Init State with Scoreboard
-    # s1 = P1's score, s2 = P2's score, cr = current round
-    # Added: 'streak' (for WYR), 'explained' (set of who answered why)
+    # Added: 'streak' (for WYR), 'explained' (set of who answered why), and 'used_q' for memory tracking
     state = {"game": game_name, "turn": p2, "partner": p2, "status": "playing", "moves": {}, 
-             "max_r": rounds, "cur_r": 1, "s1": 0, "s2": 0, "streak": 0, "explained": []}
+             "max_r": rounds, "cur_r": 1, "s1": 0, "s2": 0, "streak": 0, "explained": [], "used_q": []}
     
     GAME_STATES[p1] = GAME_STATES[p2] = state
     
@@ -321,13 +320,37 @@ async def send_tod_options(context, target_id, mode):
         
     # Send to the Partner (Asker)
     await context.bot.send_message(target_id, msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+
 async def send_wyr_round(context, p1, p2):
-    q = random.choice(GAME_DATA["wyr"])
+    # 1. Get Game State
+    gd = GAME_STATES.get(p1)
+    if not gd: return
+
+    # 2. Smart Selection Logic (No Repeats)
+    total_options = len(GAME_DATA["wyr"])
+    # Get the list of used question IDs from state (default to empty list if new)
+    used_indices = gd.get("used_q", [])
+
+    # If all questions have been asked, Reset the deck (Reshuffle)
+    if len(used_indices) >= total_options:
+        used_indices = []
     
-    # 1. Put the LONG text in the Message (No limits here)
+    # Filter available indices
+    available = [i for i in range(total_options) if i not in used_indices]
+    
+    # Pick a random unique index
+    selected_index = random.choice(available)
+    
+    # Save this index to the "Used" list in memory
+    gd["used_q"] = used_indices + [selected_index]
+    
+    # Get the actual Question text
+    q = GAME_DATA["wyr"][selected_index]
+    
+    # 3. Put the LONG text in the Message (No limits here)
     msg = f"⚖️ **Would You Rather...**\n\n🅰️ **{q[0]}**\n       ➖ OR ➖\n🅱️ **{q[1]}**"
     
-    # 2. Keep the buttons simple so they never cut off
+    # 4. Keep the buttons simple so they never cut off
     kb = [
         [InlineKeyboardButton("🅰️ Choose Option A", callback_data="wyr_a")],
         [InlineKeyboardButton("🅱️ Choose Option B", callback_data="wyr_b")]
@@ -513,10 +536,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**3. Safety First**\n"
         "•End to End Encrypted, Your identity is hidden.\n"
         "• To leave: Click '🛑 Stop'.\n"
-	"• To change Profile: Click '⚙️ Settings'.\n"
-	"• View your Profile: Click '🪪 My ID'.\n"
+        "• To change Profile: Click '⚙️ Settings'.\n"
+        "• View your Profile: Click '🪪 My ID'.\n"
         "• To report abuse: Click '⚠️ Report' after ending chat.\n"
-	"• 🛑🛑Behave Respectful to avoid Permanent **BAN**.🛑🛑\n\n"
+        "• 🛑🛑Behave Respectful to avoid Permanent **BAN**.🛑🛑\n\n"
         "**4. Commands**\n"
         "/start - Restart Bot\n"
         "/feedback [msg] - Send your feedback to Admin about Bot"
@@ -528,8 +551,22 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
 
-    # 1. GAME ANSWER LOGIC (The Answer)
-    # Check if this user is supposed to be answering a question
+    # --- [START OF NEW CODE PATCH] ---
+    # 2. GAME MANUAL QUESTION (The Fix)
+    if context.user_data.get("state") == "GAME_MANUAL":
+        partner_id = ACTIVE_CHATS.get(user_id)
+        if partner_id:
+             # Send the custom question to partner
+             await context.bot.send_message(partner_id, f"🎲 **QUESTION:**\n{text}\n\n*Type your answer...*", parse_mode='Markdown')
+             await update.message.reply_text(f"✅ Asked: {text}")
+             
+             # Set partner to answering mode so the turn switches correctly
+             if partner_id in GAME_STATES:
+                 GAME_STATES[partner_id]["status"] = "answering"
+                 GAME_STATES[partner_id]["turn"] = partner_id
+        
+        context.user_data["state"] = None
+        return
 
     # 3. ONBOARDING
     if context.user_data.get("state") == "ONBOARDING_INTEREST":
@@ -551,7 +588,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     all_interests = [x["CHANGE_INTERESTS"] for x in locale_data.TEXTS.values()]
     if text in all_interests: 
         context.user_data["state"] = "ONBOARDING_INTEREST"
-        await update.message.reply_text("👇 Type interests(saparate with come: music,dance,kdrama):", reply_markup=ReplyKeyboardRemove()); return
+        await update.message.reply_text("👇 Type interests:", reply_markup=ReplyKeyboardRemove()); return
 
     # Check Settings
     all_settings = [x["SETTINGS"] for x in locale_data.TEXTS.values()]
@@ -722,27 +759,17 @@ async def start_search(update, context):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("UPDATE users SET status = 'searching' WHERE user_id = %s", (user_id,))
     
-    # Fetch details including LANGUAGE
-    cur.execute("SELECT gender, region, interests, language FROM users WHERE user_id = %s", (user_id,))
+    # Fetch details for AI Context
+    cur.execute("SELECT gender, region, interests FROM users WHERE user_id = %s", (user_id,))
     row = cur.fetchone()
-    
     u_gender = row[0] if row else "Hidden"
     u_region = row[1] if row else "Unknown"
     tags = row[2] or "Any"
-    u_lang = row[3] if row and len(row) > 3 else "English" # <--- Grab Language
     
     conn.commit(); cur.close(); release_conn(conn)
     
-    # Get Translated Message
-    # We use .format(tags=tags) to fill in the {tags} part of the text
-    msg_text = get_text(u_lang, "SEARCHING_MSG").format(tags=tags)
-    
-    # Notify User with Translated Text and Button
-    await update.message.reply_text(
-        msg_text, 
-        parse_mode='Markdown', 
-        reply_markup=get_keyboard_searching(u_lang) # <--- Pass Lang to Button
-    )
+    # Notify User
+    await update.message.reply_text(f"📡 **Scanning...**\nLooking for: `{tags}`...", parse_mode='Markdown', reply_markup=get_keyboard_searching())
     
     # 1. Try Instant Match (Human)
     partner_id, common, p_mood, p_lang = find_match(user_id)
@@ -766,12 +793,13 @@ async def start_search(update, context):
                 await context.bot.send_message(partner_id, "Rate Stranger:", reply_markup=InlineKeyboardMarkup(kb_feedback))
             except: pass
             
+            # Fall through to schedule AI for the current user (wait logic below)
         else:
             # Real human match found immediately
             await connect_users(context, user_id, partner_id, common, p_mood, p_lang)
             return 
 
-    # 2. Schedule AI Fallback (15s) - ASYNCIO METHOD
+    # 2. Schedule AI Fallback (15s) - NEW ASYNCIO METHOD
     asyncio.create_task(execute_ghost_search(context, user_id, u_gender, u_region))
 async def perform_match(update, context, user_id):
     partner_id, common, p_mood, p_lang = find_match(user_id)
@@ -839,6 +867,7 @@ async def stop_chat(update, context, is_next=False):
     else:
         await update.message.reply_text("😶‍🌫️ **Partner Disconnect.**", reply_markup=get_keyboard_lobby(), parse_mode='Markdown')
         await update.message.reply_text("Rate Stranger:", reply_markup=InlineKeyboardMarkup(k_me))
+
 async def relay_message(update, context):
     user_id = update.effective_user.id
     partner_id = ACTIVE_CHATS.get(user_id)
@@ -869,13 +898,10 @@ async def relay_message(update, context):
 
         # 2. Normal Text Processing (The existing logic)
         if msg_text:
-            # ... (Existing process_message logic) ...
             await context.bot.send_chat_action(chat_id=user_id, action="typing")
             result = await GHOST.process_message(user_id, msg_text)
             
-            # (Keep your existing TRIGGER handling here)
             if result == "TRIGGER_SKIP" or result == "TRIGGER_INDIAN_MALE_BEG":
-                # ... (Handle disconnect) ...
                 await stop_chat(update, context)
                 return
 
@@ -883,21 +909,17 @@ async def relay_message(update, context):
                 reply_text = result['content']
                 
                 # [NEW] KEYWORD SCANNER (The Doorman)
-                # If AI wants to leave, we execute the /stop command for them.
                 triggers = ["bye", "skip", "stop", "boring", "bsdk", "hat", "leave", "gtg"]
-                # Check if any trigger word is in the reply (word boundaries)
                 is_leaving = any(f" {t} " in f" {reply_text.lower()} " for t in triggers)
                 
                 # Add a random 5% chance to just ghost without saying anything
                 is_ghosting = random.random() < 0.05
 
                 if is_leaving or is_ghosting:
-                    # Send the "Bye" message first (if not ghosting)
                     if not is_ghosting:
                         await asyncio.sleep(result['delay'])
                         await update.message.reply_text(reply_text)
                     
-                    # Then kill the chat
                     await asyncio.sleep(1) 
                     await stop_chat(update, context)
                     return
@@ -908,10 +930,6 @@ async def relay_message(update, context):
         return
 
     # --- PARTNER IS HUMAN ---
-    # (Rest of your code remains unchanged)
-
-    # --- PARTNER IS HUMAN ---
-    # (Original Logic Below)
     if partner_id:
         if user_id in GAME_STATES and GAME_STATES[user_id].get("status") == "discussing":
             gd = GAME_STATES[user_id]
@@ -1015,7 +1033,7 @@ async def show_main_menu(update):
 
     # 3. Send
     try: 
-        welcome_txt = "👋 **Welcome / Selamat Datang**" # Keep this generic or translate it too
+        welcome_txt = "👋 **Welcome / Selamat Datang**" 
         if update.message: await update.message.reply_text(welcome_txt, reply_markup=kb, parse_mode='Markdown')
         elif update.callback_query: await update.callback_query.message.reply_text("⏳ Lobby...", reply_markup=kb, parse_mode='Markdown')
     except: pass
@@ -1045,11 +1063,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
-# RPS SUB-MENU
+
+    # RPS SUB-MENU
     if data == "rps_mode_select":
         kb = [[InlineKeyboardButton("Best of 3", callback_data="game_offer_Rock paper Scissors|3"), InlineKeyboardButton("Best of 5", callback_data="game_offer_Rock paper Scissors|5")]]
         await q.edit_message_text("🔢 **Select Rounds:**", reply_markup=InlineKeyboardMarkup(kb)); return
     uid = q.from_user.id
+    
     # [NEW] SECRET MEDIA HANDLER
     if data.startswith("secret_"):
         try:
@@ -1058,7 +1078,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg_id = int(msg_id)
             duration = int(duration_str)
             
-            # Timeout: 15s for photos, (Duration + 30s) for videos
             timeout = 15 if duration == 0 else (duration + 30)
             
             await q.edit_message_text(f"🔓 **Open for {timeout}s...**")
@@ -1067,12 +1086,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=uid, 
                 from_chat_id=sender_id, 
                 message_id=msg_id, 
-                protect_content=True, # BLOCKS SCREENSHOTS
+                protect_content=True, 
                 caption=f"⏱️ **Self-Destructing in {timeout}s...**",
                 parse_mode='Markdown'
             )
             
-            # Non-blocking wait
             await asyncio.sleep(timeout)
             
             await context.bot.delete_message(chat_id=uid, message_id=sent_media.message_id)
@@ -1081,6 +1099,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try: await q.edit_message_text("❌ **Expired or Error.**")
             except: pass
         return
+        
     # NEW SETTINGS REDIRECTS
     if data == "set_gen_menu": await send_onboarding_step(update, 1); return
     if data == "set_age_menu": await send_onboarding_step(update, 2); return
@@ -1088,21 +1107,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "set_mood_menu": await send_onboarding_step(update, 5); return
     if data == "force_random": await perform_match(update, context, uid); return
     if data == "close_settings": await q.delete_message(); return
+    
     # NOTIFY ME LOGIC
-    # NOTIFY ME LOGIC (Pause & Lobby)
     if data == "notify_me":
         conn = get_conn(); cur = conn.cursor()
         cur.execute("UPDATE users SET status = 'waiting_notify' WHERE user_id = %s", (uid,))
         conn.commit(); cur.close(); release_conn(conn)
         
         await q.edit_message_text("✅ **Paused.** I'll notify you when someone joins.", parse_mode='Markdown')
-        await show_main_menu(update) # Force them back to Lobby so they are ready to click Start later
+        await show_main_menu(update)
         return
 
-    # KEEP SEARCHING LOGIC (Continue)
+    # KEEP SEARCHING LOGIC
     if data == "keep_searching":
-        await q.delete_message() # Just delete the warning, stay in queue
+        await q.delete_message() 
         return
+        
     if data == "game_soon": await q.answer("🚧 Coming Soon!", show_alert=True); return
     
     # GAME HANDLERS
@@ -1110,17 +1130,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("game_accept_"): pid = ACTIVE_CHATS.get(uid); await start_game_session(update, context, data.split("_", 2)[2], pid, uid) if pid else None; return
     if data == "game_reject": pid = ACTIVE_CHATS.get(uid); await context.bot.send_message(pid, "❌ Declined.") if pid else None; await q.edit_message_text("❌ Declined."); return
     
-    # TRUTH OR DARE LOGIC (Fixed Flow)
+    # TRUTH OR DARE LOGIC
     if data.startswith("tod_pick_"):
-        mode = data.split("_")[2] # truth or dare
+        mode = data.split("_")[2] 
         partner_id = ACTIVE_CHATS.get(uid)
         
-        # 1. Notify the person who clicked (You)
         await q.edit_message_text(f"✅ You picked **{mode.upper()}**.\nWaiting for partner to ask...", parse_mode='Markdown')
         
-        # 2. Send the Question Menu to the Partner (Asker)
         if partner_id:
-            # FIX: Passing 'context' and 'partner_id' correctly
             await send_tod_options(context, partner_id, mode)
         return
     
@@ -1128,46 +1145,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gd = GAME_STATES.get(uid)
         if gd:
             q_text = gd["options"][int(data.split("_")[2])]
-            pid = gd["partner"]
+            pid = ACTIVE_CHATS.get(uid) 
             
-            # Send Question
-            await context.bot.send_message(pid, f"🎲 **QUESTION:**\n{q_text}\n\n*Type your answer...*", parse_mode='Markdown')
-            await q.edit_message_text(f"✅ Asked: {q_text}")
-            
-            # Update State: It is now PARTNER'S turn to answer. 
-            # We DO NOT send the menu yet. We wait for text input.
-            if pid in GAME_STATES: 
-                GAME_STATES[pid]["status"] = "answering"
-                GAME_STATES[pid]["turn"] = pid 
+            if pid:
+                await context.bot.send_message(pid, f"🎲 **QUESTION:**\n{q_text}\n\n*Type your answer...*", parse_mode='Markdown')
+                await q.edit_message_text(f"✅ Asked: {q_text}")
+                
+                if pid in GAME_STATES: 
+                    GAME_STATES[pid]["status"] = "answering"
+                    GAME_STATES[pid]["turn"] = pid 
         return
+        
     if data == "tod_manual": context.user_data["state"] = "GAME_MANUAL"; await q.edit_message_text("✍️ **Type your question now:**"); return
-# ROCK PAPER SCISSORS LOGIC
-    # ROCK PAPER SCISSORS (TOURNAMENT EDITION)
+
+    # ROCK PAPER SCISSORS LOGIC
     if data.startswith("rps_"):
         move = data.split("_")[1]
         gd = GAME_STATES.get(uid)
         if not gd: return
         
-        # 1. Save Move
         gd["moves"][uid] = move
         await q.edit_message_text(f"✅ You chose **{move.upper()}**.\nWaiting for partner...")
         
-        # 2. Check if both played
         partner_id = ACTIVE_CHATS.get(uid)
         if partner_id and partner_id in gd["moves"]:
             p_move = gd["moves"][partner_id]
             
-            # 3. Calculate ROUND Winner
             r_res = "🤝 Draw"
-            winner = None # None, p1, or p2
-            
-            # Determine Offerer (p1) vs Accepter (p2) for scoring
-            # We stored scores as s1 (for p1) and s2 (for p2)
-            # We need to know who 'uid' is relative to the game owner
-            # But simpler: Just track scores by ID? 
-            # Let's use the 'turn' logic or just simple ID comparison? 
-            # FAST FIX: Since both share the SAME dictionary object, we can just update gd['s1'] if uid < partner_id else...
-            # Wait, easier: Just send the text.
+            winner = None
             
             if move == p_move: r_res = "🤝 Draw"
             elif (move == "rock" and p_move == "scissors") or \
@@ -1179,17 +1184,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  r_res = f"💀 You ({move}) lost to {p_move}!"
                  winner = partner_id
 
-            # Update Scoreboard
             if winner == uid: gd[f"s_{uid}"] = gd.get(f"s_{uid}", 0) + 1
             elif winner == partner_id: gd[f"s_{partner_id}"] = gd.get(f"s_{partner_id}", 0) + 1
             
-            # Get Current Scores
             sc_me = gd.get(f"s_{uid}", 0)
             sc_pa = gd.get(f"s_{partner_id}", 0)
             
-            # 4. Check Tournament Status
             if gd["cur_r"] >= gd["max_r"]:
-                # GAME OVER - FINAL RESULTS
                 final_res = "aww...🤝 **MATCH DRAW!**"
                 if sc_me > sc_pa: final_res = "🏆 **YOU WON THE MATCH!🍾**"
                 elif sc_pa > sc_me: final_res = "💀 **YOU LOST THE MATCH!**"
@@ -1202,14 +1203,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(uid, msg, parse_mode='Markdown', reply_markup=get_keyboard_game())
                 await context.bot.send_message(partner_id, p_msg, parse_mode='Markdown', reply_markup=get_keyboard_game())
                 
-                # Cleanup
                 gd["moves"] = {}
-                # Keep state briefly or delete? Let's delete to prevent glitches
                 del GAME_STATES[uid]
                 del GAME_STATES[partner_id]
                 
             else:
-                # NEXT ROUND
                 p_r_res = f"🏆 You ({p_move}) beat {move}!" if winner == partner_id else (f"💀 You ({p_move}) lost to {move}!" if winner == uid else "🤝 Draw")
                 
                 msg = f"🔔 **Round {gd['cur_r']} Result:**\n{r_res}\n\n📊 Score: {sc_me} - {sc_pa}\n⏳ Next round..."
@@ -1218,7 +1216,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(uid, msg, parse_mode='Markdown')
                 await context.bot.send_message(partner_id, p_msg, parse_mode='Markdown')
                 
-                # Setup Next Round
                 gd["cur_r"] += 1
                 gd["moves"] = {}
                 await asyncio.sleep(2)
@@ -1226,22 +1223,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # WOULD YOU RATHER LOGIC
-    # WOULD YOU RATHER (SOCIAL ENGINE 2.0)
     if data.startswith("wyr_") and data != "wyr_skip":
-        choice = data.split("_")[1].upper() # A or B
+        choice = data.split("_")[1].upper()
         gd = GAME_STATES.get(uid)
         if not gd: return
         
-        # 1. Save Vote
         gd["moves"][uid] = choice
         await q.edit_message_text(f"✅ You voted **Option {choice}**.\nWaiting for partner...")
         
-        # 2. Check if both voted
         partner_id = ACTIVE_CHATS.get(uid)
         if partner_id and partner_id in gd["moves"]:
             p_choice = gd["moves"][partner_id]
             
-            # 3. Analyze Compatibility
             match_text = ""
             if choice == p_choice:
                 gd["streak"] = gd.get("streak", 0) + 1
@@ -1253,21 +1246,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 gd["streak"] = 0
                 match_text = "⚡ **DIFFERENT POV!** (Streak Reset)"
 
-            # 4. Announce & Trigger "Interrogation Phase"
             msg = f"📊 **RESULTS:**\n\n👤 You: **{choice}**\n👤 Partner: **{p_choice}**\n\n{match_text}\n\n👇 **Tell your partner WHY you chose that!**"
             p_msg = f"📊 **RESULTS:**\n\n👤 You: **{p_choice}**\n👤 Partner: **{choice}**\n\n{match_text}\n\n👇 **Tell your partner WHY you chose that!**"
             
-            # Switch State to "Discussion"
             gd["status"] = "discussing"
-            gd["explained"] = [] # Reset explanation tracker
+            gd["explained"] = [] 
             
-            # Add a Skip Button (Emergency Exit)
             kb = [[InlineKeyboardButton("⏭️ Skip Discussion", callback_data="wyr_skip")]]
             
             await context.bot.send_message(uid, msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
             await context.bot.send_message(partner_id, p_msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
             
-            # Reset moves for safety
             gd["moves"] = {}
         return
     
@@ -1276,12 +1265,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gd = GAME_STATES.get(uid)
         pid = ACTIVE_CHATS.get(uid)
         
-        # Only process if in discussing phase
         if gd and gd.get("status") == "discussing":
-            # 1. Initialize 'explained' list if missing
             if "explained" not in gd: gd["explained"] = []
             
-            # 2. Mark this user as DONE (Treat Skip as an 'Answer')
             if uid not in gd["explained"]:
                 gd["explained"].append(uid)
                 await q.edit_message_text("⏭️ **You skipped.** Waiting for partner...")
@@ -1290,13 +1276,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.answer("⏳ Waiting for partner...", show_alert=True)
                 return
 
-            # 3. Check if BOTH are done (Meaning: Both Skipped, or 1 Skipped + 1 Answered)
             if len(gd["explained"]) >= 2:
-                # Notify
                 if pid: await context.bot.send_message(pid, "✨ **Next Round...**")
                 await context.bot.send_message(uid, "✨ **Next Round...**")
                 
-                # Reset State & Start Next Round
                 gd["status"] = "playing"
                 await asyncio.sleep(1.5)
                 if pid: await send_wyr_round(context, uid, pid)
@@ -1358,12 +1341,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         act = parts[1]
         target_str = parts[2]
 
-        # [NEW] ILLUSION: Handle AI Rating
         if target_str == "AI":
             await q.edit_message_text("✅ Feedback Sent.")
             return
 
-        # Handle Human Rating
         target = int(target_str)
         if act == "report": 
             await handle_report(update, context, uid, target)
@@ -1378,6 +1359,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "action_search": await start_search(update, context); return
     if data == "main_menu": await show_main_menu(update); return
     if data == "stop_search": await stop_search_process(update, context); return
+
 if __name__ == '__main__':
     if not BOT_TOKEN: print("ERROR: Config missing")
     else:
