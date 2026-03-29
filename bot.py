@@ -496,6 +496,13 @@ async def send_onboarding_step(update, step):
 # ==============================================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    
+    # 🛡️ CHECKPOINT: Prevent overwriting the chat keyboard
+    if user.id in ACTIVE_CHATS:
+        l = await get_lang(user.id)
+        await update.message.reply_text(get_text(l, "CMD_IN_CHAT"), reply_markup=get_keyboard_chat(l), parse_mode='Markdown')
+        return
+
     conn = get_conn(); cur = conn.cursor()
     cur.execute("SELECT banned_until, gender FROM users WHERE user_id = %s", (user.id,))
     data = cur.fetchone()
@@ -1031,9 +1038,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             timeout = 15 if duration == 0 else (duration + 30)
             await q.edit_message_text(f"🔓 **{timeout}s...**")
             sent_media = await context.bot.copy_message(chat_id=uid, from_chat_id=int(sender_id), message_id=int(msg_id), protect_content=True, caption=f"⏱️ **{timeout}s...**", parse_mode='Markdown')
-            await asyncio.sleep(timeout)
-            await context.bot.delete_message(chat_id=uid, message_id=sent_media.message_id)
-            await context.bot.send_message(uid, "💣")
+            
+            # 🛡️ Run the timer in the background so the bot doesn't freeze
+            async def delete_secret(chat_id, message_id, wait_time):
+                await asyncio.sleep(wait_time)
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                    await context.bot.send_message(chat_id, "💣")
+                except: pass
+
+            asyncio.create_task(delete_secret(uid, sent_media.message_id, timeout))
+            
         except Exception:
             try: await q.edit_message_text("❌")
             except: pass
