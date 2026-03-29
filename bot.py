@@ -210,11 +210,12 @@ def get_keyboard_chat(lang="English", is_translating=False):
         [KeyboardButton(get_text(lang, "BTN_STOP")), KeyboardButton(get_text(lang, "BTN_NEXT"))]
     ], resize_keyboard=True)
 
-def get_keyboard_game(lang="English", is_spicy=False):
+def get_keyboard_game(lang="English", is_spicy=False, is_translating=False):
     spicy_btn = KeyboardButton(get_text(lang, "BTN_NORMAL_MODE")) if is_spicy else KeyboardButton(get_text(lang, "BTN_SPICY_MODE"))
+    trans_btn = KeyboardButton(get_text(lang, "BTN_TRANS_OFF")) if is_translating else KeyboardButton(get_text(lang, "BTN_TRANS_ON"))
     return ReplyKeyboardMarkup([
         [KeyboardButton(get_text(lang, "BTN_STOP_CHAT")), KeyboardButton(get_text(lang, "BTN_STOP_GAME"))],
-        [spicy_btn]
+        [spicy_btn, trans_btn]
     ], resize_keyboard=True)
 
 # ==============================================================================
@@ -798,7 +799,13 @@ async def relay_message(update, context):
         if user_id in GAME_STATES and GAME_STATES[user_id].get("status") == "discussing":
             gd = GAME_STATES[user_id]
             try:
-                await update.message.copy(chat_id=partner_id, caption=get_text(p_lang, "BECAUSE"))
+                if update.message.text and partner_id in TRANSLATE_ENABLED:
+                    translated = await translate_text(update.message.text, p_lang)
+                    final_text = f"{update.message.text}\n💬 *[{translated}]*" if translated and translated.lower() != update.message.text.lower() else update.message.text
+                    await context.bot.send_message(partner_id, f"*{get_text(p_lang, 'BECAUSE')}*\n{final_text}", parse_mode='Markdown')
+                else:
+                    await update.message.copy(chat_id=partner_id, caption=get_text(p_lang, "BECAUSE"))
+                
                 await update.message.reply_text(get_text(l, "EXPLANATION_SENT"))
                 if "explained" not in gd: gd["explained"] = []
                 if user_id not in gd["explained"]: gd["explained"].append(user_id)
@@ -819,7 +826,12 @@ async def relay_message(update, context):
                     cb = f"secret_{user_id}_{update.message.message_id}_{duration}"
                     await context.bot.send_message(partner_id, get_text(p_lang, "SECRET_RX").format(cap=cap), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"🔓", callback_data=cb)]]), parse_mode='Markdown')
                 else:
-                    await update.message.copy(chat_id=partner_id, caption=get_text(p_lang, "ANSWER"))
+                    if update.message.text and partner_id in TRANSLATE_ENABLED:
+                        translated = await translate_text(update.message.text, p_lang)
+                        final_text = f"{update.message.text}\n💬 *[{translated}]*" if translated and translated.lower() != update.message.text.lower() else update.message.text
+                        await context.bot.send_message(partner_id, f"*{get_text(p_lang, 'ANSWER')}*\n{final_text}", parse_mode='Markdown')
+                    else:
+                        await update.message.copy(chat_id=partner_id, caption=get_text(p_lang, "ANSWER"))
                 
                 await update.message.reply_text(get_text(l, "ANSWER_SENT"))
                 GAME_STATES[user_id]["status"] = "playing"
@@ -883,7 +895,13 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         partner_id = ACTIVE_CHATS.get(user_id)
         if partner_id:
              p_lang = await get_lang(partner_id)
-             await context.bot.send_message(partner_id, get_text(p_lang, "QUESTION").format(q=text), parse_mode='Markdown')
+             final_q = text
+             if partner_id in TRANSLATE_ENABLED:
+                 translated = await translate_text(text, p_lang)
+                 if translated and translated.lower() != text.lower():
+                     final_q = f"{text}\n💬 *[{translated}]*"
+                     
+             await context.bot.send_message(partner_id, get_text(p_lang, "QUESTION").format(q=final_q), parse_mode='Markdown')
              await update.message.reply_text(get_text(l, "ASKED").format(q=text))
              if partner_id in GAME_STATES:
                  GAME_STATES[partner_id]["status"] = "answering"; GAME_STATES[partner_id]["turn"] = partner_id
@@ -938,18 +956,25 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.execute("SELECT message FROM chat_logs WHERE sender_id = %s AND receiver_id = %s ORDER BY timestamp DESC LIMIT 3", (pid, user_id))
         rows = cur.fetchall(); cur.close(); release_conn(conn)
         
+        is_game = user_id in GAME_STATES
+        spicy = GAME_STATES[user_id].get("spicy", False) if is_game else False
+        kb = get_keyboard_game(l, spicy, True) if is_game else get_keyboard_chat(l, True)
+
         if rows:
             combined = "\n".join([r[0] for r in reversed(rows)])
             translated = await translate_text(combined, l)
-            await update.message.reply_text(get_text(l, "TRANS_CATCHUP").format(text=translated), reply_markup=get_keyboard_chat(l, True), parse_mode='Markdown')
+            await update.message.reply_text(get_text(l, "TRANS_CATCHUP").format(text=translated), reply_markup=kb, parse_mode='Markdown')
         else:
-            await update.message.reply_text("🔄 **Translation ON.**", reply_markup=get_keyboard_chat(l, True), parse_mode='Markdown')
+            await update.message.reply_text("🔄 **Translation ON.**", reply_markup=kb, parse_mode='Markdown')
         return
 
     all_trans_off = [x.get("BTN_TRANS_OFF", "🧊 Stop Translate") for x in locale_data.TEXTS.values()] + ["🧊 Stop Translate"]
     if text in all_trans_off:
         if user_id in TRANSLATE_ENABLED: TRANSLATE_ENABLED.remove(user_id)
-        await update.message.reply_text("💧 **Translation OFF.**", reply_markup=get_keyboard_chat(l, False), parse_mode='Markdown')
+        is_game = user_id in GAME_STATES
+        spicy = GAME_STATES[user_id].get("spicy", False) if is_game else False
+        kb = get_keyboard_game(l, spicy, False) if is_game else get_keyboard_chat(l, False)
+        await update.message.reply_text("💧 **Translation OFF.**", reply_markup=kb, parse_mode='Markdown')
         return
     
     if text in [x["BTN_GAMES"] for x in locale_data.TEXTS.values()] or text == "🎮 Games":
