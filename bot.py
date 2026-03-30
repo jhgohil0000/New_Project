@@ -325,8 +325,10 @@ async def send_tod_turn(context, turn_id):
 async def send_tod_options(context, target_id, mode):
     l = await get_lang(target_id)
     is_spicy = GAME_STATES.get(target_id, {}).get("spicy", False)
-    list_key = f"tod_{mode}_spicy" if is_spicy else f"tod_{mode}"
-    options = random.sample(GAME_DATA[list_key], 5)
+    list_key = f"tod_{mode}_spicy_{l}" if is_spicy else f"tod_{mode}_{l}"
+    # 🛡️ Failsafe: If a user has 'French' or 'Spanish', it defaults to English
+    safe_key = list_key if list_key in GAME_DATA else (f"tod_{mode}_spicy_English" if is_spicy else f"tod_{mode}_English")
+    options = random.sample(GAME_DATA[safe_key], 5)
     
     icon = "🔥 " if is_spicy else "🎭 "
     msg_text = icon + get_text(l, "PICK_A").format(mode=mode.upper()).replace("🎭 ", "")
@@ -345,9 +347,9 @@ async def send_wyr_round(context, p1, p2):
     if not gd: return
 
     is_spicy = gd.get("spicy", False)
-    list_key = "wyr_spicy" if is_spicy else "wyr"
+    base_key = "wyr_spicy_English" if is_spicy else "wyr_English"
     
-    total_options = len(GAME_DATA[list_key])
+    total_options = len(GAME_DATA[base_key])
     used_key = "used_q_spicy" if is_spicy else "used_q"
     used_indices = gd.get(used_key, [])
 
@@ -358,13 +360,20 @@ async def send_wyr_round(context, p1, p2):
     selected_index = random.choice(available)
     gd[used_key] = used_indices + [selected_index]
     
-    q = GAME_DATA[list_key][selected_index]
-    
     l1 = await get_lang(p1)
     l2 = await get_lang(p2)
     
-    msg1 = get_text(l1, "WYR_Q").format(q1=q[0], q2=q[1])
-    msg2 = get_text(l2, "WYR_Q").format(q1=q[0], q2=q[1])
+    # 🌍 Fetch native language list (fallback to English if not Indo/Hindi)
+    key1 = f"wyr_spicy_{l1}" if is_spicy else f"wyr_{l1}"
+    key2 = f"wyr_spicy_{l2}" if is_spicy else f"wyr_{l2}"
+    list1 = GAME_DATA.get(key1, GAME_DATA[base_key])
+    list2 = GAME_DATA.get(key2, GAME_DATA[base_key])
+    
+    q1_text = list1[selected_index]
+    q2_text = list2[selected_index]
+    
+    msg1 = get_text(l1, "WYR_Q").format(q1=q1_text[0], q2=q1_text[1])
+    msg2 = get_text(l2, "WYR_Q").format(q1=q2_text[0], q2=q2_text[1])
     
     kb = [
         [InlineKeyboardButton("🅰️ A", callback_data="wyr_a")],
@@ -1466,8 +1475,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if gd["cur_r"] >= gd["max_r"]:
                 is_spicy = gd.get("spicy", False)
-                list_key = "tod_dare_spicy" if is_spicy else "tod_dare"
-                chosen_dare = random.choice(GAME_DATA.get(list_key, ["Send a voice note howling like a wolf!"]))
+                list_key = f"tod_dare_spicy_{l}" if is_spicy else f"tod_dare_{l}"
+                safe_key = list_key if list_key in GAME_DATA else (f"tod_dare_spicy_English" if is_spicy else "tod_dare_English")
+                chosen_dare = random.choice(GAME_DATA.get(safe_key, ["Send a voice note howling like a wolf!"]))
                 
                 final_res = get_text(l, "DRAW_MATCH") + get_text(l, "RPS_DRAW_NO_DARE")
                 p_final = get_text(p_lang, "DRAW_MATCH") + get_text(p_lang, "RPS_DRAW_NO_DARE")
