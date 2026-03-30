@@ -653,9 +653,18 @@ async def start_search(update, context):
     if user_id in ACTIVE_CHATS: await update.message.reply_text(get_text(l, "ALREADY_IN_CHAT"), parse_mode='Markdown'); return
     
     conn = get_conn(); cur = conn.cursor()
+    
+    # 🛡️ THE GATEKEEPER: Check ban status before allowing them to search
+    cur.execute("SELECT banned_until, gender, region, interests FROM users WHERE user_id = %s", (user_id,))
+    row = cur.fetchone()
+    
+    if row and row[0] and row[0] > datetime.datetime.now():
+        cur.close(); release_conn(conn)
+        await update.message.reply_text(f"🚫 You are currently banned until {row[0].strftime('%Y-%m-%d %H:%M')}.", reply_markup=ReplyKeyboardRemove())
+        return
+        
     cur.execute("UPDATE users SET status = 'searching' WHERE user_id = %s", (user_id,))
-    cur.execute("SELECT gender, region, interests FROM users WHERE user_id = %s", (user_id,))
-    row = cur.fetchone(); u_gender = row[0] if row else "Hidden"; u_region = row[1] if row else "Unknown"; tags = row[2] or "Any"
+    u_gender = row[1] if row else "Hidden"; u_region = row[2] if row else "Unknown"; tags = row[3] or "Any"
     conn.commit(); cur.close(); release_conn(conn)
     
     await update.message.reply_text(get_text(l, "SEARCHING_MSG").format(tags=tags), parse_mode='Markdown', reply_markup=get_keyboard_searching(l))
