@@ -328,18 +328,23 @@ async def send_tod_options(context, target_id, mode):
     list_key = f"tod_{mode}_spicy_{l}" if is_spicy else f"tod_{mode}_{l}"
     # 🛡️ Failsafe: If a user has 'French' or 'Spanish', it defaults to English
     safe_key = list_key if list_key in GAME_DATA else (f"tod_{mode}_spicy_English" if is_spicy else f"tod_{mode}_English")
-    options = random.sample(GAME_DATA[safe_key], 5)
+    
+    # 🧠 THE FIX: Grab 5 random Index Numbers instead of text strings
+    total_q = len(GAME_DATA[safe_key])
+    option_indices = random.sample(range(total_q), min(5, total_q))
     
     icon = "🔥 " if is_spicy else "🎭 "
     msg_text = icon + get_text(l, "PICK_A").format(mode=mode.upper()).replace("🎭 ", "")
-    for i, opt in enumerate(options): msg_text += f"**{i+1}.** {opt}\n"
+    for i, idx in enumerate(option_indices): 
+        msg_text += f"**{i+1}.** {GAME_DATA[safe_key][idx]}\n"
     
     kb = [[InlineKeyboardButton("1️⃣", callback_data="tod_send_0"), InlineKeyboardButton("2️⃣", callback_data="tod_send_1"), InlineKeyboardButton("3️⃣", callback_data="tod_send_2")],
           [InlineKeyboardButton("4️⃣", callback_data="tod_send_3"), InlineKeyboardButton("5️⃣", callback_data="tod_send_4")],
           [InlineKeyboardButton(get_text(l, "ASK_OWN"), callback_data="tod_manual")]]
     
     if target_id not in GAME_STATES: GAME_STATES[target_id] = {}
-    GAME_STATES[target_id]["options"] = options
+    GAME_STATES[target_id]["options"] = option_indices
+    GAME_STATES[target_id]["tod_mode"] = mode # Save the mode (truth or dare) so we know which list to look in later!
     await context.bot.send_message(target_id, msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
 
 async def send_wyr_round(context, p1, p2):
@@ -1438,13 +1443,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data.startswith("tod_send_"): 
         gd = GAME_STATES.get(uid)
-        if gd:
-            q_text = gd["options"][int(data.split("_")[2])]
+        if gd and "options" in gd and "tod_mode" in gd:
+            btn_idx = int(data.split("_")[2])
+            if btn_idx >= len(gd["options"]): return
+            
+            q_index = gd["options"][btn_idx]
+            mode = gd["tod_mode"]
+            is_spicy = gd.get("spicy", False)
+            
             pid = ACTIVE_CHATS.get(uid) 
             if pid:
                 p_lang = await get_lang(pid)
-                await context.bot.send_message(pid, get_text(p_lang, "QUESTION").format(q=q_text), parse_mode='Markdown')
-                await q.edit_message_text(get_text(l, "ASKED").format(q=q_text))
+                
+                # 🌍 Fetch native language list for Sender (You)
+                my_list_key = f"tod_{mode}_spicy_{l}" if is_spicy else f"tod_{mode}_{l}"
+                my_safe_key = my_list_key if my_list_key in GAME_DATA else (f"tod_{mode}_spicy_English" if is_spicy else f"tod_{mode}_English")
+                my_q_text = GAME_DATA[my_safe_key][q_index]
+                
+                # 🌍 Fetch native language list for Receiver (Partner)
+                p_list_key = f"tod_{mode}_spicy_{p_lang}" if is_spicy else f"tod_{mode}_{p_lang}"
+                p_safe_key = p_list_key if p_list_key in GAME_DATA else (f"tod_{mode}_spicy_English" if is_spicy else f"tod_{mode}_English")
+                p_q_text = GAME_DATA[p_safe_key][q_index]
+                
+                await context.bot.send_message(pid, get_text(p_lang, "QUESTION").format(q=p_q_text), parse_mode='Markdown')
+                await q.edit_message_text(get_text(l, "ASKED").format(q=my_q_text))
+                
                 if pid in GAME_STATES: 
                     GAME_STATES[pid]["status"] = "answering"; GAME_STATES[pid]["turn"] = pid 
         return
