@@ -135,7 +135,17 @@ app_flask = Flask(__name__)
 
 @app_flask.route('/')
 def health_check():
-    return "Bot is Alive!", 200
+    conn = get_conn()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+        except Exception:
+            pass
+        finally:
+            release_conn(conn)
+    return "Bot and DB are Alive!", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
