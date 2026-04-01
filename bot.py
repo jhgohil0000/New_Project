@@ -594,17 +594,20 @@ async def execute_ghost_search(context, user_id, u_gender, u_region):
             ACTIVE_CHATS[user_id] = f"AI_{persona}"
             l = await get_lang(user_id)
             
-            # 🎭 Give the AI a capitalized name and a believable vibe
             card = (f"🪪 **OFFICIAL ANON ID**\n━━━━━━━━━━━━━━━\n"
-                    f"👤 **Name:** {persona.capitalize()}\n👑 **Status:** 🌟 Trusted Veteran\n🎭 **Vibe:** Chill\n\n"
+                    f"👤 **Name:** Anon\n👑 **Status:** 🌟 Trusted Veteran\n🎭 **Vibe:** Random\n\n"
                     f"📊 **STATS:**\n🔗 **Common:** Random\n\n⚠️ *Say Hi to start chatting!*")
             
-            # 🛡️ THE FIX: Add the fake 'Report' button to perfectly mimic a real human card
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("🚨 Report Profile", callback_data="report_profile_AI")]])
             
             try: 
-                # 🛡️ THE FIX: Send as an actual Photo using your DEFAULT_OTHER file_id, not plain text
+                # Attempt to send the photo (Will fail if testing on Beta Bot with Main Bot's File ID)
                 await context.bot.send_photo(user_id, photo=DEFAULT_OTHER, caption=card, reply_markup=kb, parse_mode='Markdown')
+            except: 
+                # 🛡️ THE FAILSAFE: If the photo crashes, send the exact text-card format humans get
+                await context.bot.send_message(user_id, f"🖼️ [No Avatar Set]\n\n{card}", reply_markup=kb, parse_mode='Markdown')
+                
+            try:
                 await context.bot.send_message(user_id, "🎮 Menu unlocked below.", reply_markup=get_keyboard_chat(l))
             except: pass
 
