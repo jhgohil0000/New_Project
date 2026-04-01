@@ -594,11 +594,17 @@ async def execute_ghost_search(context, user_id, u_gender, u_region):
             ACTIVE_CHATS[user_id] = f"AI_{persona}"
             l = await get_lang(user_id)
             
+            # 🎭 Give the AI a capitalized name and a believable vibe
             card = (f"🪪 **OFFICIAL ANON ID**\n━━━━━━━━━━━━━━━\n"
-                    f"👤 **Name:** Anon\n👑 **Status:** 🌟 Trusted Veteran\n🎭 **Vibe:** Random\n\n"
+                    f"👤 **Name:** {persona.capitalize()}\n👑 **Status:** 🌟 Trusted Veteran\n🎭 **Vibe:** Chill\n\n"
                     f"📊 **STATS:**\n🔗 **Common:** Random\n\n⚠️ *Say Hi to start chatting!*")
+            
+            # 🛡️ THE FIX: Add the fake 'Report' button to perfectly mimic a real human card
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🚨 Report Profile", callback_data="report_profile_AI")]])
+            
             try: 
-                await context.bot.send_message(user_id, f"🖼️ [Ghost Avatar]\n\n{card}", parse_mode='Markdown')
+                # 🛡️ THE FIX: Send as an actual Photo using your DEFAULT_OTHER file_id, not plain text
+                await context.bot.send_photo(user_id, photo=DEFAULT_OTHER, caption=card, reply_markup=kb, parse_mode='Markdown')
                 await context.bot.send_message(user_id, "🎮 Menu unlocked below.", reply_markup=get_keyboard_chat(l))
             except: pass
 
@@ -805,7 +811,7 @@ async def relay_message(update, context):
             return
 
         if msg_text:
-            await context.bot.send_chat_action(chat_id=user_id, action="typing")
+            # 🛑 THE FIX: Deleted the send_chat_action("typing") line so it stays completely silent like human relays
             result = await GHOST.process_message(user_id, msg_text)
             if result in ["TRIGGER_SKIP", "TRIGGER_INDIAN_MALE_BEG"]:
                 await stop_chat(update, context)
