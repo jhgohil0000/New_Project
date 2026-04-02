@@ -192,7 +192,8 @@ def init_db():
         cols = ["username TEXT", "first_name TEXT", "report_count INTEGER DEFAULT 0", 
                 "banned_until TIMESTAMP", "gender TEXT DEFAULT 'Hidden'", 
                 "age_range TEXT DEFAULT 'Hidden'", "region TEXT DEFAULT 'Hidden'",
-                "nickname TEXT DEFAULT 'Anon'", "avatar_id TEXT"]
+                "nickname TEXT DEFAULT 'Anon'", "avatar_id TEXT", 
+                "filter_credits INTEGER DEFAULT 2", "referred_by BIGINT DEFAULT 0"]
         for c in cols: cur.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {c};")
     except: pass
     
@@ -206,7 +207,7 @@ def init_db():
 def get_keyboard_lobby(lang="English"):
     return ReplyKeyboardMarkup([
         [KeyboardButton(get_text(lang, "START_BTN"))],
-        [KeyboardButton(get_text(lang, "CHANGE_INTERESTS")), KeyboardButton(get_text(lang, "SETTINGS"))],
+        [KeyboardButton("🎯 Filters"), KeyboardButton(get_text(lang, "SETTINGS"))],
         [KeyboardButton(get_text(lang, "MY_ID")), KeyboardButton(get_text(lang, "HELP"))]
     ], resize_keyboard=True)
 
@@ -231,7 +232,7 @@ def get_keyboard_game(lang="English", is_spicy=False, is_translating=False):
 # ==============================================================================
 # 🧠 MATCHMAKING ENGINE
 # ==============================================================================
-def find_match(user_id):
+def find_match(user_id, hard_filter=None):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("SELECT language, interests, age_range, mood FROM users WHERE user_id = %s", (user_id,))
     me = cur.fetchone()
@@ -242,10 +243,16 @@ def find_match(user_id):
     cur.execute("SELECT target_id FROM user_interactions WHERE rater_id = %s AND score = -1", (user_id,))
     disliked_ids = {row[0] for row in cur.fetchall()}
 
-    cur.execute("""
+    filter_query = ""
+    if hard_filter:
+        col, val = hard_filter
+        if col == "gender": filter_query = f" AND gender = '{val}'"
+        elif col == "region": filter_query = f" AND region = '{val}'"
+        
+    cur.execute(f"""
         SELECT user_id, language, interests, age_range, mood, nickname, avatar_id, karma_score, gender 
         FROM users 
-        WHERE status = 'searching' AND user_id != %s AND (banned_until IS NULL OR banned_until < NOW())
+        WHERE status = 'searching' AND user_id != %s AND (banned_until IS NULL OR banned_until < NOW()){filter_query}
     """, (user_id,))
     candidates = cur.fetchall()
     
@@ -510,7 +517,7 @@ async def send_onboarding_step(update, step):
               [InlineKeyboardButton("💼 25-30", callback_data="set_age_25-30"), InlineKeyboardButton("☕ 30+", callback_data="set_age_30+")],
               [InlineKeyboardButton("⏭️ Skip", callback_data="set_age_Hidden")]]
     elif step == 3:
-        msg = "3️⃣ **Primary Language?**"
+        msg = "3️⃣ **Primary Language?(Your Default Bot Language)**"
         kb = [[InlineKeyboardButton("🇺🇸 English", callback_data="set_lang_English"), InlineKeyboardButton("🇮🇳 Hindi", callback_data="set_lang_Hindi")],
               [InlineKeyboardButton("🇮🇩 Indo", callback_data="set_lang_Indo"), InlineKeyboardButton("🇪🇸 Spanish", callback_data="set_lang_Spanish")],
               [InlineKeyboardButton("🇫🇷 French", callback_data="set_lang_French"), InlineKeyboardButton("🇯🇵 Japanese", callback_data="set_lang_Japanese")],
@@ -547,6 +554,11 @@ async def send_onboarding_step(update, step):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
+    # --- CAPTURE REFERRAL LINK ---
+    if context.args and context.args[0].startswith("ref_"):
+        try: context.user_data["referred_by"] = int(context.args[0].split("_")[1])
+        except: pass
+        
     # 🛡️ CHECKPOINT: Prevent overwriting the chat keyboard
     if user.id in ACTIVE_CHATS:
         l = await get_lang(user.id)
@@ -597,17 +609,8 @@ async def execute_ghost_search(context, user_id, u_gender, u_region):
             card = (f"🪪 **OFFICIAL ANON ID**\n━━━━━━━━━━━━━━━\n"
                     f"👤 **Name:** Anon\n👑 **Status:** 🌟 Trusted Veteran\n🎭 **Vibe:** Random\n\n"
                     f"📊 **STATS:**\n🔗 **Common:** Random\n\n⚠️ *Say Hi to start chatting!*")
-            
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🚨 Report Profile", callback_data="report_profile_AI")]])
-            
             try: 
-                # Attempt to send the photo (Will fail if testing on Beta Bot with Main Bot's File ID)
-                await context.bot.send_photo(user_id, photo=DEFAULT_OTHER, caption=card, reply_markup=kb, parse_mode='Markdown')
-            except: 
-                # 🛡️ THE FAILSAFE: If the photo crashes, send the exact text-card format humans get
-                await context.bot.send_message(user_id, f"🖼️ [No Avatar Set]\n\n{card}", reply_markup=kb, parse_mode='Markdown')
-                
-            try:
+                await context.bot.send_message(user_id, f"🖼️ [Ghost Avatar]\n\n{card}", parse_mode='Markdown')
                 await context.bot.send_message(user_id, "🎮 Menu unlocked below.", reply_markup=get_keyboard_chat(l))
             except: pass
 
@@ -656,6 +659,7 @@ async def connect_users(context, user_id, partner_id, common, p_mood, p_lang, p_
             print("Card Error:", e)
 
 async def stop_search_process(update, context):
+    if "active_filter" in context.user_data: del context.user_data["active_filter"]
     user_id = update.effective_user.id
     l = await get_lang(user_id)
     conn = get_conn(); cur = conn.cursor()
@@ -667,6 +671,7 @@ async def stop_search_process(update, context):
     except: pass
 
 async def start_search(update, context):
+    if "active_filter" in context.user_data: del context.user_data["active_filter"]
     user_id = update.effective_user.id
     l = await get_lang(user_id)
     if user_id in ACTIVE_CHATS: await update.message.reply_text(get_text(l, "ALREADY_IN_CHAT"), parse_mode='Markdown'); return
@@ -791,6 +796,21 @@ async def relay_message(update, context):
         file_id = update.message.photo[-1].file_id
         await update_user(user_id, "avatar_id", file_id)
         context.user_data["state"] = None
+        
+        # --- GIVE REFERRAL REWARD ---
+        referrer = context.user_data.get("referred_by")
+        if referrer and referrer != user_id:
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute("SELECT referred_by FROM users WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            if row and row[0] == 0:  # Check if they haven't been referred yet
+                cur.execute("UPDATE users SET referred_by = %s WHERE user_id = %s", (referrer, user_id))
+                cur.execute("UPDATE users SET filter_credits = filter_credits + 5 WHERE user_id = %s", (referrer,))
+                conn.commit()
+                try: await context.bot.send_message(referrer, "🎉 **Congrats!** A friend joined using your link. You earned +5 Filter Credits!", parse_mode='Markdown')
+                except: pass
+            cur.close(); release_conn(conn)
+        
         await update.message.reply_text(f"✅ **Profile Complete!**\n\nYOUR ID IS:\n`{file_id}`", reply_markup=get_keyboard_lobby(await get_lang(user_id)), parse_mode='Markdown')
         return
 
@@ -814,7 +834,7 @@ async def relay_message(update, context):
             return
 
         if msg_text:
-            # 🛑 THE FIX: Deleted the send_chat_action("typing") line so it stays completely silent like human relays
+            await context.bot.send_chat_action(chat_id=user_id, action="typing")
             result = await GHOST.process_message(user_id, msg_text)
             if result in ["TRIGGER_SKIP", "TRIGGER_INDIAN_MALE_BEG"]:
                 await stop_chat(update, context)
@@ -966,9 +986,18 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in [x["START_BTN"] for x in locale_data.TEXTS.values()]: await start_search(update, context); return
     if text in [x["STOP_SEARCH"] for x in locale_data.TEXTS.values()]: await stop_search_process(update, context); return
     
-    if text in [x["CHANGE_INTERESTS"] for x in locale_data.TEXTS.values()]: 
-        context.user_data["state"] = "ONBOARDING_INTEREST"
-        await update.message.reply_text("👇 Type interests:", reply_markup=ReplyKeyboardRemove()); return
+    if text == "🎯 Filters": 
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT filter_credits FROM users WHERE user_id = %s", (user_id,))
+        creds = cur.fetchone()[0]; cur.close(); release_conn(conn)
+        if creds <= 0:
+            bot_info = await context.bot.get_me()
+            await update.message.reply_text(f"🛑 **Out of Credits!**\nShare to get +5 Credits:\n`https://t.me/{bot_info.username}?start=ref_{user_id}`", parse_mode='Markdown')
+            return
+        kb = [[InlineKeyboardButton("🚻 Only Male", callback_data="hard_filter_gender_Male"), InlineKeyboardButton("👩 Only Female", callback_data="hard_filter_gender_Female")],
+              [InlineKeyboardButton("🌏 Asia", callback_data="hard_filter_region_Asia"), InlineKeyboardButton("🌍 Europe", callback_data="hard_filter_region_Europe")]]
+        await update.message.reply_text(f"💳 **Credits: {creds}**\nApply a strict filter (Costs 1 Credit):", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        return
 
     all_settings = [x["SETTINGS"] for x in locale_data.TEXTS.values()]
     if text in all_settings:
@@ -1109,9 +1138,13 @@ async def send_reroll_option(context: ContextTypes.DEFAULT_TYPE):
 async def show_profile(update, context):
     user_id = update.effective_user.id
     conn = get_conn(); cur = conn.cursor()
-    cur.execute("SELECT language, interests, karma_score, gender, age_range, region, mood, nickname, avatar_id FROM users WHERE user_id = %s", (user_id,))
+    cur.execute("SELECT language, interests, karma_score, gender, age_range, region, mood, nickname, avatar_id, filter_credits FROM users WHERE user_id = %s", (user_id,))
     data = cur.fetchone(); cur.close(); release_conn(conn)
-    text = f"🪪 **MY ANON ID**\n━━━━━━━━━━━━━━━━\n👤 **Name:** {data[7]}\n🗣️ **Lang:** {data[0]}\n🏷️ **Tags:** {data[1]}\n🚻 **Gen:** {data[3]}\n🎂 **Age:** {data[4]}\n🌍 **Reg:** {data[5]}\n🎭 **Vibe:** {data[6]}\n🛡️ **Karma:** {data[2]}"
+    
+    bot_info = await context.bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+    
+    text = f"🪪 **MY ANON ID**\n━━━━━━━━━━━━━━━━\n👤 **Name:** {data[7]}\n🗣️ **Lang:** {data[0]}\n🏷️ **Tags:** {data[1]}\n🚻 **Gen:** {data[3]}\n🎂 **Age:** {data[4]}\n🌍 **Reg:** {data[5]}\n🎭 **Vibe:** {data[6]}\n🛡️ **Karma:** {data[2]}\n💳 **Filter Credits:** {data[9]}\n\n🎁 **Share to get +5 Credits:**\n`{ref_link}`"
     
     try:
         if data[8] and data[8] not in ["MALE_FILE_ID_HERE", "FEMALE_FILE_ID_HERE", "OTHER_FILE_ID_HERE"]:
@@ -1199,7 +1232,45 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("set_mood_"): await update_user(uid, "mood", data.split("_")[2]); context.user_data["state"] = "ONBOARDING_INTEREST"; await send_onboarding_step(update, 6); return
     if data == "onboarding_step_7": context.user_data["state"] = "ONBOARDING_NICKNAME"; await send_onboarding_step(update, 7); return
     if data == "onboarding_step_8": context.user_data["state"] = "ONBOARDING_AVATAR"; await send_onboarding_step(update, 8); return
-    if data == "onboarding_done": context.user_data["state"] = None; await show_main_menu(update); return
+    if data.startswith("hard_filter_"):
+        col = data.split("_")[2]; val = data.split("_")[3]
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT filter_credits, banned_until FROM users WHERE user_id = %s", (uid,))
+        row = cur.fetchone()
+        if row and row[1] and row[1] > datetime.datetime.now():
+            cur.close(); release_conn(conn); await q.edit_message_text(f"🚫 Banned until {row[1]}"); return
+        if not row or row[0] <= 0:
+            cur.close(); release_conn(conn); await q.edit_message_text("🛑 Out of credits!"); return
+            
+        cur.execute("UPDATE users SET filter_credits = filter_credits - 1, status = 'searching' WHERE user_id = %s", (uid,))
+        conn.commit(); cur.close(); release_conn(conn)
+        
+        context.user_data["active_filter"] = (col, val)
+        await q.edit_message_text(f"🔍 Searching for **{val}**... (-1 Credit)", parse_mode='Markdown')
+        
+        partner_id, common, p_mood, p_lang, p_nick, p_ava, p_karma, p_gen = find_match(uid, context.user_data["active_filter"])
+        if partner_id: await connect_users(context, uid, partner_id, common, p_mood, p_lang, p_nick, p_ava, p_karma, p_gen)
+        return
+
+    if data == "onboarding_done": 
+        context.user_data["state"] = None
+        
+        # --- GIVE REFERRAL REWARD ---
+        referrer = context.user_data.get("referred_by")
+        if referrer and referrer != uid:
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute("SELECT referred_by FROM users WHERE user_id = %s", (uid,))
+            row = cur.fetchone()
+            if row and row[0] == 0:  # Check if they haven't been referred yet
+                cur.execute("UPDATE users SET referred_by = %s WHERE user_id = %s", (referrer, uid))
+                cur.execute("UPDATE users SET filter_credits = filter_credits + 5 WHERE user_id = %s", (referrer,))
+                conn.commit()
+                try: await context.bot.send_message(referrer, "🎉 **Congrats!** A friend joined using your link. You earned +5 Filter Credits!", parse_mode='Markdown')
+                except: pass
+            cur.close(); release_conn(conn)
+            
+        await show_main_menu(update)
+        return
 
     if data == "edit_nickname": context.user_data["state"] = "ONBOARDING_NICKNAME"; await q.edit_message_text("👇 Type new nickname:"); return
     if data == "edit_avatar": context.user_data["state"] = "ONBOARDING_AVATAR"; await q.edit_message_text("📸 Send new avatar image:"); return
