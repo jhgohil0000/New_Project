@@ -193,7 +193,8 @@ def init_db():
                 "banned_until TIMESTAMP", "gender TEXT DEFAULT 'Hidden'", 
                 "age_range TEXT DEFAULT 'Hidden'", "region TEXT DEFAULT 'Hidden'",
                 "nickname TEXT DEFAULT 'Anon'", "avatar_id TEXT", 
-                "filter_credits INTEGER DEFAULT 2", "referred_by BIGINT DEFAULT 0"]
+                "filter_credits INTEGER DEFAULT 2", "referred_by BIGINT DEFAULT 0",
+                "last_daily_reward DATE"]
         for c in cols: cur.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {c};")
     except: pass
     
@@ -492,6 +493,23 @@ async def admin_broadcast_execute(update: Update, context: ContextTypes.DEFAULT_
         except: pass
     await update.message.reply_text("✅ Broadcast done.")
 
+async def admin_addcredit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS: return
+    try:
+        target = int(context.args[0])
+        amount = int(context.args[1])
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("UPDATE users SET filter_credits = filter_credits + %s WHERE user_id = %s RETURNING filter_credits", (amount, target))
+        new_bal = cur.fetchone()
+        conn.commit(); cur.close(); release_conn(conn)
+        if new_bal:
+            await update.message.reply_text(f"✅ Added {amount} credits to {target}. New balance: {new_bal[0]}")
+            try: await context.bot.send_message(target, f"🎁 **Admin Bonus!** You received +{amount} Filter Credits!", parse_mode='Markdown')
+            except: pass
+        else:
+            await update.message.reply_text("❌ User not found.")
+    except: await update.message.reply_text("Usage: /addcredit ID AMOUNT")
+
 async def handle_feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     feedback_text = update.message.text.replace("/feedback", "").strip()
@@ -706,7 +724,7 @@ async def start_search(update, context):
     conn = get_conn(); cur = conn.cursor()
     
     # 🛡️ THE GATEKEEPER: Check ban status before allowing them to search
-    cur.execute("SELECT banned_until, gender, region, interests FROM users WHERE user_id = %s", (user_id,))
+    cur.execute("SELECT banned_until, gender, region, interests, last_daily_reward FROM users WHERE user_id = %s", (user_id,))
     row = cur.fetchone()
     
     if row and row[0] and row[0] > datetime.datetime.now():
@@ -714,6 +732,14 @@ async def start_search(update, context):
         await update.message.reply_text(f"🚫 You are currently banned until {row[0].strftime('%Y-%m-%d %H:%M')}.", reply_markup=ReplyKeyboardRemove())
         return
         
+    # 🎁 DAILY CHECK-IN REWARD
+    today = datetime.date.today()
+    last_reward = row[4] if row else None
+    if last_reward != today:
+        cur.execute("UPDATE users SET filter_credits = filter_credits + 1, last_daily_reward = %s WHERE user_id = %s", (today, user_id))
+        try: await context.bot.send_message(user_id, "🎁 **Daily Check-in!** You earned +1 Filter Credit!", parse_mode='Markdown')
+        except: pass
+
     cur.execute("UPDATE users SET status = 'searching' WHERE user_id = %s", (user_id,))
     u_gender = row[1] if row else "Hidden"; u_region = row[2] if row else "Unknown"; tags = row[3] or "Any"
     conn.commit(); cur.close(); release_conn(conn)
@@ -1660,9 +1686,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if sc_me > sc_pa: 
                     final_res = get_text(l, "WON_MATCH") + get_text(l, "RPS_WIN_DARE").format(dare=chosen_dare)
                     p_final = get_text(p_lang, "LOST_MATCH") + get_text(p_lang, "RPS_LOSE_DARE").format(dare=chosen_dare)
+                    # 🏆 RPS WINNER REWARD (ME)
+                    conn = get_conn(); cur = conn.cursor()
+                    cur.execute("UPDATE users SET filter_credits = filter_credits + 1 WHERE user_id = %s", (uid,))
+                    conn.commit(); cur.close(); release_conn(conn)
+                    try: await context.bot.send_message(uid, "🏆 **Winner!** You earned +1 Filter Credit!", parse_mode='Markdown')
+                    except: pass
                 elif sc_pa > sc_me: 
                     final_res = get_text(l, "LOST_MATCH") + get_text(l, "RPS_LOSE_DARE").format(dare=chosen_dare)
                     p_final = get_text(p_lang, "WON_MATCH") + get_text(p_lang, "RPS_WIN_DARE").format(dare=chosen_dare)
+                    # 🏆 RPS WINNER REWARD (PARTNER)
+                    conn = get_conn(); cur = conn.cursor()
+                    cur.execute("UPDATE users SET filter_credits = filter_credits + 1 WHERE user_id = %s", (partner_id,))
+                    conn.commit(); cur.close(); release_conn(conn)
+                    try: await context.bot.send_message(partner_id, "🏆 **Winner!** You earned +1 Filter Credit!", parse_mode='Markdown')
+                    except: pass
                 
                 msg = get_text(l, "RPS_FINAL").format(max_r=gd['max_r'], s1=sc_me, s2=sc_pa, res=final_res)
                 p_msg = get_text(p_lang, "RPS_FINAL").format(max_r=gd['max_r'], s1=sc_pa, s2=sc_me, res=p_final)
@@ -1750,6 +1788,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sc = 1 if act == "like" else -1
             conn = get_conn(); cur = conn.cursor()
             cur.execute("INSERT INTO user_interactions (rater_id, target_id, score) VALUES (%s, %s, %s)", (uid, target, sc))
+            
+            # 👍 THUMBS UP REWARD
+            if act == "like":
+                cur.execute("UPDATE users SET filter_credits = filter_credits + 1 WHERE user_id = %s", (target,))
+                try: await context.bot.send_message(target, "👍 **Someone liked you!** You earned +1 Filter Credit!", parse_mode='Markdown')
+                except: pass
+
             conn.commit(); cur.close(); release_conn(conn)
             await q.edit_message_text("✅")
 
@@ -1768,6 +1813,7 @@ if __name__ == '__main__':
         app.add_handler(CommandHandler("broadcast", admin_broadcast_execute))
         app.add_handler(CommandHandler("help", help_command))
         app.add_handler(CommandHandler("feedback", handle_feedback_command))
+	app.add_handler(CommandHandler("addcredit", admin_addcredit_command))
         
         app.add_handler(MessageHandler(filters.TEXT, handle_text_input))
         
