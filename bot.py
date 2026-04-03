@@ -1813,10 +1813,8 @@ if __name__ == '__main__':
         app.add_handler(CommandHandler("broadcast", admin_broadcast_execute))
         app.add_handler(CommandHandler("help", help_command))
         app.add_handler(CommandHandler("feedback", handle_feedback_command))
-		app.add_handler(CommandHandler("addcredit", admin_addcredit_command))
-        
+        app.add_handler(CommandHandler("addcredit", admin_addcredit_command))
         app.add_handler(MessageHandler(filters.TEXT, handle_text_input))
-        
         app.add_handler(CallbackQueryHandler(button_handler))
         app.add_handler(MessageReactionHandler(handle_reaction))
         app.add_handler(MessageHandler(filters.ALL, relay_message))
