@@ -614,7 +614,34 @@ async def execute_ghost_search(context, user_id, u_gender, u_region):
                 await context.bot.send_message(user_id, "🎮 Menu unlocked below.", reply_markup=get_keyboard_chat(l))
             except: pass
 
+async def execute_premium_search_timeout(context, user_id, val, col):
+    await asyncio.sleep(15)  
+    conn = get_conn()
+    if not conn: return
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM users WHERE user_id = %s", (user_id,))
+    status = cur.fetchone(); cur.close(); release_conn(conn)
+    
+    if status and status[0] == 'searching':
+        # 🛑 TIMEOUT REACHED: Pause search so they aren't matched in the background while deciding
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("UPDATE users SET status = 'idle' WHERE user_id = %s", (user_id,))
+        conn.commit(); cur.close(); release_conn(conn)
+        
+        kb = [[InlineKeyboardButton("🆓 Search Anyone (Free)", callback_data="free_search_fallback")],
+              [InlineKeyboardButton(f"⏳ Keep Waiting for {val}", callback_data=f"keep_waiting_premium_{col}_{val}")]]
+        try: 
+            await context.bot.send_message(user_id, f"⚠️ **No {val} users found right now.**\nYour credit was NOT deducted.\n\nWhat would you like to do?", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        except: pass
+
 async def connect_users(context, user_id, partner_id, common, p_mood, p_lang, p_nick, p_ava, p_karma, p_gen):
+    # 🛑 ESCROW DEDUCTION: Charge the 1 credit only upon successful connection
+    if "active_filter" in context.user_data:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("UPDATE users SET filter_credits = GREATEST(filter_credits - 1, 0) WHERE user_id = %s", (user_id,))
+        conn.commit(); cur.close(); release_conn(conn)
+        del context.user_data["active_filter"]
+        
     for uid in [user_id, partner_id]:
         if isinstance(ACTIVE_CHATS.get(uid), str):
             if uid in GAME_STATES: del GAME_STATES[uid]
@@ -1242,14 +1269,40 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not row or row[0] <= 0:
             cur.close(); release_conn(conn); await q.edit_message_text("🛑 Out of credits!"); return
             
-        cur.execute("UPDATE users SET filter_credits = filter_credits - 1, status = 'searching' WHERE user_id = %s", (uid,))
+        # 🛑 ESCROW: Do not deduct credit yet, just set to searching
+        cur.execute("UPDATE users SET status = 'searching' WHERE user_id = %s", (uid,))
         conn.commit(); cur.close(); release_conn(conn)
         
         context.user_data["active_filter"] = (col, val)
-        await q.edit_message_text(f"🔍 Searching for **{val}**... (-1 Credit)", parse_mode='Markdown')
+        await q.edit_message_text(f"🔍 Searching for **{val}**... (Credit Held)", parse_mode='Markdown')
         
         partner_id, common, p_mood, p_lang, p_nick, p_ava, p_karma, p_gen = find_match(uid, context.user_data["active_filter"])
-        if partner_id: await connect_users(context, uid, partner_id, common, p_mood, p_lang, p_nick, p_ava, p_karma, p_gen)
+        if partner_id: 
+            await connect_users(context, uid, partner_id, common, p_mood, p_lang, p_nick, p_ava, p_karma, p_gen)
+        else:
+            # 🛑 TIMEOUT: Start 15s wait for premium filter. NO GHOST AI.
+            asyncio.create_task(execute_premium_search_timeout(context, uid, val, col))
+        return
+        
+    if data == "free_search_fallback":
+        await q.edit_message_text("🔄 Switching to Free Search...")
+        if "active_filter" in context.user_data: del context.user_data["active_filter"]
+        await start_search(update, context) # Starts standard search and allows Ghost AI
+        return
+        
+    if data.startswith("keep_waiting_premium_"):
+        col = data.split("_")[3]; val = data.split("_")[4]
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("UPDATE users SET status = 'searching' WHERE user_id = %s", (uid,))
+        conn.commit(); cur.close(); release_conn(conn)
+        context.user_data["active_filter"] = (col, val)
+        await q.edit_message_text(f"🔍 Continuing search for **{val}**...", parse_mode='Markdown')
+        
+        partner_id, common, p_mood, p_lang, p_nick, p_ava, p_karma, p_gen = find_match(uid, context.user_data["active_filter"])
+        if partner_id: 
+            await connect_users(context, uid, partner_id, common, p_mood, p_lang, p_nick, p_ava, p_karma, p_gen)
+        else:
+            asyncio.create_task(execute_premium_search_timeout(context, uid, val, col))
         return
 
     if data == "onboarding_done": 
