@@ -43,7 +43,19 @@ DEFAULT_MALE = "AgACAgUAAxkBAAIDbWnFVLX6LjG374-RxzYj_EdXsCjrAAJyDWsbQK0xVsZVFy9b
 DEFAULT_FEMALE = "AgACAgUAAxkBAAIDdWnFXghImuyxdLW8-iIJEp1kwHAdAAKNDWsbQK0xVuqb4eiaOzUOAQADAgADeAADOgQ"
 DEFAULT_OTHER = "AgACAgUAAxkBAAIDemnFXpBYUU0YQkeTclrszyDczqUoAAKODWsbQK0xVhTsjry1NYnTAQADAgADeAADOgQ"
 
-ACTIVE_CHATS = {} 
+USER_GHOST_HISTORY = {} 
+
+GHOST_PROFILES = {
+    "south_indian": {"name": "Arjun", "gender": "Male", "karma": 110, "mood": "Bored", "avatar": DEFAULT_MALE},
+    "north_indian": {"name": "Kabir", "gender": "Male", "karma": 65, "mood": "Neutral", "avatar": DEFAULT_MALE},
+    "indo_teen": {"name": "Budi", "gender": "Male", "karma": 130, "mood": "Happy", "avatar": DEFAULT_MALE},
+    "american_teen": {"name": "Jake", "gender": "Male", "karma": 150, "mood": "Bored", "avatar": DEFAULT_MALE},
+    "indian_girl_sobo": {"name": "Aisha", "gender": "Female", "karma": 185, "mood": "Happy", "avatar": DEFAULT_FEMALE},
+    "kpop_stan": {"name": "Mia", "gender": "Female", "karma": 140, "mood": "Sad", "avatar": DEFAULT_FEMALE},
+    "african_bro": {"name": "David", "gender": "Male", "karma": 175, "mood": "Happy", "avatar": DEFAULT_MALE}
+}
+
+ACTIVE_CHATS = {}
 MESSAGE_MAP = {}
 GAME_STATES = {}       
 GAME_COOLDOWNS = {}    
@@ -616,21 +628,36 @@ async def execute_ghost_search(context, user_id, u_gender, u_region):
     status = cur.fetchone(); cur.close(); release_conn(conn)
     
     if status and status[0] == 'searching':
-        persona = GHOST.pick_random_persona() 
+        history = USER_GHOST_HISTORY.get(user_id, [])
+        available = [k for k in GHOST_PROFILES.keys() if k not in history]
+        if not available:
+            history = [] 
+            available = list(GHOST_PROFILES.keys())
+        
+        chosen_ai = random.choice(available)
+        USER_GHOST_HISTORY.setdefault(user_id, []).append(chosen_ai)
+        prof = GHOST_PROFILES[chosen_ai]
+
         user_ctx = {'gender': u_gender, 'country': u_region}
-        success = await GHOST.start_chat(user_id, persona, "Hidden", user_ctx)
+        success = await GHOST.start_chat(user_id, chosen_ai, prof["gender"], user_ctx)
         
         if success:
-            ACTIVE_CHATS[user_id] = f"AI_{persona}"
+            ACTIVE_CHATS[user_id] = f"AI_{chosen_ai}"
             l = await get_lang(user_id)
             
+            def get_title(k): return "🌟 Trusted Veteran" if k >= 150 else ("⚠️ Suspect" if k <= 50 else "🌱 Rookie")
+            
             card = (f"🪪 **OFFICIAL ANON ID**\n━━━━━━━━━━━━━━━\n"
-                    f"👤 **Name:** Anon\n👑 **Status:** 🌟 Trusted Veteran\n🎭 **Vibe:** Random\n\n"
+                    f"👤 **Name:** {prof['name']}\n👑 **Status:** {get_title(prof['karma'])}\n🎭 **Vibe:** {prof['mood']}\n\n"
                     f"📊 **STATS:**\n🔗 **Common:** Random\n\n⚠️ *Say Hi to start chatting!*")
+            
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🚨 Report Profile", callback_data=f"report_profile_{chosen_ai}")]])
+            
             try: 
-                await context.bot.send_message(user_id, f"🖼️ [Ghost Avatar]\n\n{card}", parse_mode='Markdown')
+                await context.bot.send_photo(user_id, photo=prof['avatar'], caption=card, reply_markup=kb, parse_mode='Markdown')
                 await context.bot.send_message(user_id, "🎮 Menu unlocked below.", reply_markup=get_keyboard_chat(l))
-            except: pass
+            except Exception as e: 
+                print(f"Ghost Card Error: {e}")
 
 async def execute_premium_search_timeout(context, user_id, val, col):
     await asyncio.sleep(15)  
@@ -887,24 +914,33 @@ async def relay_message(update, context):
             return
 
         if msg_text:
-            await context.bot.send_chat_action(chat_id=user_id, action="typing")
             result = await GHOST.process_message(user_id, msg_text)
             if result in ["TRIGGER_SKIP", "TRIGGER_INDIAN_MALE_BEG"]:
                 await stop_chat(update, context)
                 return
+                
             if isinstance(result, dict) and result.get("type") == "text":
                 reply_text = result['content']
                 triggers = ["bye", "skip", "stop", "boring", "bsdk", "hat", "leave", "gtg"]
                 is_leaving = any(f" {t} " in f" {reply_text.lower()} " for t in triggers)
                 is_ghosting = random.random() < 0.05
+                
                 if is_leaving or is_ghosting:
                     if not is_ghosting:
+                        await context.bot.send_chat_action(chat_id=user_id, action="typing")
                         await asyncio.sleep(result['delay'])
                         await update.message.reply_text(reply_text)
                     await asyncio.sleep(1) 
                     await stop_chat(update, context)
                     return
+                
+                await context.bot.send_chat_action(chat_id=user_id, action="typing")
                 await asyncio.sleep(result['delay'])
+                
+                conn = get_conn(); cur = conn.cursor()
+                cur.execute("INSERT INTO chat_logs (sender_id, receiver_id, message) VALUES (%s, %s, %s)", (0, user_id, reply_text))
+                conn.commit(); cur.close(); release_conn(conn)
+                
                 await update.message.reply_text(reply_text)
         return
 
